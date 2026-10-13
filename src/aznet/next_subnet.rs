@@ -11,7 +11,7 @@ use crate::aznet::auth::{AuthConfig, TokenProvider};
 use crate::aznet::azure::{ArmClient, Subscription, Vnet, VnetRef};
 use crate::aznet::cli::{GetNextSubnetArgs, Output};
 use crate::aznet::ipam::{self, Allocation, Ipv4Cidr};
-use crate::aznet::report::{self, Report, Status, VnetResult};
+use crate::aznet::report::{self, Report, SpaceResult, Status, VnetResult};
 
 pub mod exit {
     pub const ALL_AVAILABLE: u8 = 0;
@@ -156,6 +156,19 @@ pub fn evaluate(r: &VnetRef, sub_name: String, vnet: &Vnet, prefix: u8) -> VnetR
         row.error = Some("VNet has no IPv4 address space".into());
         return row;
     }
+    row.spaces = ipam::per_space(&spaces, &used, prefix)
+        .into_iter()
+        .map(|s| SpaceResult {
+            address_space: s.space.to_string(),
+            status: if s.next_available.is_some() {
+                Status::Available
+            } else {
+                Status::Exhausted
+            },
+            next_available: s.next_available.map(|c| c.to_string()),
+            largest_free: s.largest_free.map(|c| c.to_string()),
+        })
+        .collect();
     match ipam::next_available(&spaces, &used, prefix) {
         Allocation::Available(c) => {
             row.status = Status::Available;
@@ -165,28 +178,11 @@ pub fn evaluate(r: &VnetRef, sub_name: String, vnet: &Vnet, prefix: u8) -> VnetR
             largest_free,
             free_blocks,
             usable_free_addresses,
-            per_space,
         } => {
             row.status = Status::Exhausted;
             row.largest_free = largest_free.map(|c| c.to_string());
             row.free_blocks = free_blocks.iter().map(ToString::to_string).collect();
             row.usable_free_addresses = usable_free_addresses;
-            if per_space.len() > 1 {
-                row.error = Some(format!(
-                    "Multiple IPv4 address spaces; suggest checking each range: {}",
-                    per_space
-                        .iter()
-                        .map(|s| format!(
-                            "{} (largest free: {})",
-                            s.space,
-                            s.largest_free
-                                .map(|c| c.to_string())
-                                .unwrap_or_else(|| "none".into())
-                        ))
-                        .collect::<Vec<_>>()
-                        .join("; ")
-                ));
-            }
         }
     }
     row
@@ -235,6 +231,24 @@ mod tests {
         let r = evaluate(&vref(), "sub".into(), &v, 27);
         assert_eq!(r.status, Status::Exhausted);
         assert_eq!(r.largest_free.as_deref(), Some("10.0.0.48/28"));
+    }
+
+    #[test]
+    fn evaluates_each_address_space() {
+        let v = vnet(
+            r#"{"name":"v","properties":{
+            "addressSpace":{"addressPrefixes":["10.0.0.0/26","10.1.0.0/24"]},
+            "subnets":[{"name":"a","properties":{"addressPrefix":"10.0.0.0/27"}},
+                       {"name":"b","properties":{"addressPrefix":"10.1.0.0/27"}}]}}"#,
+        );
+        let r = evaluate(&vref(), "sub".into(), &v, 27);
+        assert_eq!(r.next_available.as_deref(), Some("10.0.0.32/27"));
+        let next: Vec<_> = r
+            .spaces
+            .iter()
+            .map(|s| s.next_available.as_deref())
+            .collect();
+        assert_eq!(next, [Some("10.0.0.32/27"), Some("10.1.0.32/27")]);
     }
 
     #[test]
