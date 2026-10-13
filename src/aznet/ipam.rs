@@ -134,12 +134,54 @@ pub fn range_to_cidrs(a: u64, b: u64) -> Vec<Ipv4Cidr> {
     out
 }
 
+/// Outcome for a single address space, evaluated independently of the VNet's other ranges.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpaceExhaustion {
+pub struct SpaceAllocation {
     pub space: Ipv4Cidr,
+    /// First aligned block of the requested size inside this space, if any.
+    pub next_available: Option<Ipv4Cidr>,
+    /// Largest block that could still become an Azure subnet (lowest address on ties).
     pub largest_free: Option<Ipv4Cidr>,
+    /// All free blocks >= /29, address order.
     pub free_blocks: Vec<Ipv4Cidr>,
+    /// Addresses in those usable blocks (fragments smaller than /29 are excluded).
     pub usable_free_addresses: u64,
+}
+
+pub fn allocate_in_space(space: Ipv4Cidr, used: &[Ipv4Cidr], prefix: u8) -> SpaceAllocation {
+    let free = free_ranges(space, used);
+    let next_available = if space.prefix() <= prefix {
+        first_fit(&free, prefix)
+    } else {
+        None
+    };
+    let free_blocks: Vec<Ipv4Cidr> = free
+        .into_iter()
+        .flat_map(|(a, b)| range_to_cidrs(a, b))
+        .filter(|c| c.prefix() <= AZURE_MIN_SUBNET_PREFIX)
+        .collect();
+    SpaceAllocation {
+        space,
+        next_available,
+        largest_free: largest(&free_blocks),
+        usable_free_addresses: free_blocks.iter().map(Ipv4Cidr::size).sum(),
+        free_blocks,
+    }
+}
+
+/// Each address space in declared order, allocated independently.
+pub fn per_space(spaces: &[Ipv4Cidr], used: &[Ipv4Cidr], prefix: u8) -> Vec<SpaceAllocation> {
+    spaces
+        .iter()
+        .map(|&s| allocate_in_space(s, used, prefix))
+        .collect()
+}
+
+fn largest(blocks: &[Ipv4Cidr]) -> Option<Ipv4Cidr> {
+    blocks
+        .iter()
+        .min_by_key(|c| (c.prefix(), c.first()))
+        .copied()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,51 +194,24 @@ pub enum Allocation {
         free_blocks: Vec<Ipv4Cidr>,
         /// Addresses in those usable blocks (fragments smaller than /29 are excluded).
         usable_free_addresses: u64,
-        /// Per-address-space advice when the VNet contains more than one IPv4 range.
-        per_space: Vec<SpaceExhaustion>,
     },
 }
 
 /// First-fit across address spaces in declared order.
 pub fn next_available(spaces: &[Ipv4Cidr], used: &[Ipv4Cidr], prefix: u8) -> Allocation {
     let mut blocks = Vec::new();
-    let mut per_space = Vec::new();
     for &space in spaces {
-        let free = free_ranges(space, used);
-        if space.prefix() <= prefix {
-            if let Some(c) = first_fit(&free, prefix) {
-                return Allocation::Available(c);
-            }
+        let a = allocate_in_space(space, used, prefix);
+        if let Some(c) = a.next_available {
+            return Allocation::Available(c);
         }
-        let usable: Vec<Ipv4Cidr> = free
-            .into_iter()
-            .flat_map(|(a, b)| range_to_cidrs(a, b))
-            .filter(|c| c.prefix() <= AZURE_MIN_SUBNET_PREFIX)
-            .collect();
-        let largest_free = usable
-            .iter()
-            .min_by_key(|c| (c.prefix(), c.first()))
-            .copied();
-        let usable_free_addresses = usable.iter().map(Ipv4Cidr::size).sum();
-        per_space.push(SpaceExhaustion {
-            space,
-            largest_free,
-            free_blocks: usable.clone(),
-            usable_free_addresses,
-        });
-        blocks.extend(usable);
+        blocks.extend(a.free_blocks);
     }
     blocks.sort_unstable_by_key(|c| c.first());
-    let largest_free = blocks
-        .iter()
-        .min_by_key(|c| (c.prefix(), c.first()))
-        .copied();
-    let usable_free_addresses = blocks.iter().map(Ipv4Cidr::size).sum();
     Allocation::Exhausted {
-        largest_free,
+        largest_free: largest(&blocks),
+        usable_free_addresses: blocks.iter().map(Ipv4Cidr::size).sum(),
         free_blocks: blocks,
-        usable_free_addresses,
-        per_space,
     }
 }
 
@@ -252,6 +267,21 @@ mod tests {
     }
 
     #[test]
+    fn per_space_reports_next_block_in_every_range() {
+        let spaces = cs(&["10.0.0.0/26", "10.1.0.0/24", "10.2.0.0/28"]);
+        let used = cs(&["10.0.0.0/26", "10.1.0.0/27"]);
+        let r = per_space(&spaces, &used, 27);
+        assert_eq!(r.len(), 3);
+        assert_eq!(r[0].space, c("10.0.0.0/26"));
+        assert_eq!(r[0].next_available, None);
+        assert_eq!(r[0].largest_free, None);
+        assert_eq!(r[1].next_available, Some(c("10.1.0.32/27")));
+        // range smaller than the request: nothing fits, but its free block is still advised
+        assert_eq!(r[2].next_available, None);
+        assert_eq!(r[2].largest_free, Some(c("10.2.0.0/28")));
+    }
+
+    #[test]
     fn space_smaller_than_request_is_skipped() {
         let r = next_available(&cs(&["10.0.0.0/28", "10.2.0.0/24"]), &[], 27);
         assert_eq!(r, Allocation::Available(c("10.2.0.0/27")));
@@ -271,7 +301,6 @@ mod tests {
                 largest_free,
                 free_blocks,
                 usable_free_addresses,
-                ..
             } => {
                 assert_eq!(largest_free, Some(c("10.0.0.224/28")));
                 assert_eq!(free_blocks, cs(&["10.0.0.224/28", "10.0.0.248/29"]));

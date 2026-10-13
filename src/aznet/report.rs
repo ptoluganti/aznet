@@ -19,6 +19,15 @@ pub enum Status {
     Error,
 }
 
+/// One IPv4 address space of a VNet, evaluated on its own.
+#[derive(Debug, Serialize)]
+pub struct SpaceResult {
+    pub address_space: String,
+    pub status: Status,
+    pub next_available: Option<String>,
+    pub largest_free: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct VnetResult {
     pub subscription_name: String,
@@ -27,6 +36,8 @@ pub struct VnetResult {
     pub resource_group: String,
     pub location: String,
     pub address_space: Vec<String>,
+    /// Per-address-space next free block, in declared order.
+    pub spaces: Vec<SpaceResult>,
     pub subnet_count: usize,
     pub requested_prefix: u8,
     pub status: Status,
@@ -46,6 +57,7 @@ impl VnetResult {
             resource_group: r.resource_group.clone(),
             location: r.location.clone(),
             address_space: vec![],
+            spaces: vec![],
             subnet_count: 0,
             requested_prefix: prefix,
             status: Status::Error,
@@ -158,25 +170,31 @@ pub fn print_table(r: &Report) {
         "VNet",
         "Resource Group",
         "Subnets",
+        "Address Space",
         "Next Available CIDR",
     ]);
     for row in &r.results {
-        let next = match row.status {
-            Status::Available => row.next_available.clone().unwrap_or_default(),
-            Status::Exhausted => match &row.largest_free {
-                Some(l) => format!("none (largest free: {l})"),
-                None => "none (VNet full)".into(),
-            },
-            Status::Error => "error".into(),
+        // One line per address space; VNet columns are only printed on its first line.
+        let lines: Vec<(String, String)> = if row.status == Status::Error {
+            vec![(row.address_space.join(", "), "error".into())]
+        } else {
+            row.spaces
+                .iter()
+                .map(|s| (s.address_space.clone(), next_cell(s)))
+                .collect()
         };
-        detail.add_row(vec![
-            Cell::new(&row.subscription_name),
-            Cell::new(&row.subscription_id),
-            Cell::new(&row.vnet_name),
-            Cell::new(&row.resource_group),
-            Cell::new(row.subnet_count).set_alignment(CellAlignment::Right),
-            Cell::new(next),
-        ]);
+        for (i, (space, next)) in lines.into_iter().enumerate() {
+            let vnet = |v: String| if i == 0 { v } else { String::new() };
+            detail.add_row(vec![
+                Cell::new(vnet(row.subscription_name.clone())),
+                Cell::new(vnet(row.subscription_id.clone())),
+                Cell::new(vnet(row.vnet_name.clone())),
+                Cell::new(vnet(row.resource_group.clone())),
+                Cell::new(vnet(row.subnet_count.to_string())).set_alignment(CellAlignment::Right),
+                Cell::new(space),
+                Cell::new(next),
+            ]);
+        }
     }
     println!("{detail}");
 
@@ -194,12 +212,6 @@ pub fn print_table(r: &Report) {
             row.requested_prefix,
             row.address_space.join(", ")
         );
-        if row.address_space.len() > 1 {
-            println!("  VNet has multiple IPv4 address spaces. Check each range for a free block:");
-            for space in &row.address_space {
-                println!("    - {space}");
-            }
-        }
         match &row.largest_free {
             Some(l) => {
                 let p = l.rsplit('/').next().unwrap_or_default();
@@ -226,5 +238,13 @@ pub fn print_table(r: &Report) {
                 println!("  No block of /29 or larger remains — add an address space to the VNet.")
             }
         }
+    }
+}
+
+fn next_cell(s: &SpaceResult) -> String {
+    match (&s.next_available, &s.largest_free) {
+        (Some(n), _) => n.clone(),
+        (None, Some(l)) => format!("none (largest free: {l})"),
+        (None, None) => "none (range full)".into(),
     }
 }
