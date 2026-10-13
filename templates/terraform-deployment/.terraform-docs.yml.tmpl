@@ -1,0 +1,20 @@
+# terraform-docs config: injects the reference between the markers in TERRAFORM-DOCS.md
+# of each module directory it runs against.
+formatter: markdown table
+
+output:
+  file: TERRAFORM-DOCS.md
+  mode: inject
+
+sort:
+  enabled: true
+  by: required
+
+settings:
+  anchor: true
+  default: true
+  hide-empty: true
+  lockfile: true
+  required: true
+  sensitive: true
+  type: true

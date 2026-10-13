@@ -1,0 +1,17 @@
+{
+  "name": "{{name}}",
+  "version": "0.1.0",
+  "private": true,
+  "description": "{{description}}",
+  "scripts": {
+    "prepare": "husky",
+    "lint": "pre-commit run --all-files",
+    "docs": "terraform-docs --config .terraform-docs.yml terraform",
+    "release": "cz bump"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.8.1",
+    "@commitlint/config-conventional": "^19.8.1",
+    "husky": "^9.1.7"
+  }
+}

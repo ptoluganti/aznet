@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::aznet::auth::AuthMethod;
@@ -19,6 +21,9 @@ pub struct Cli {
 pub enum Command {
     /// Find the next free subnet of a given size in a VNet, across every subscription you can see
     GetNextSubnet(GetNextSubnetArgs),
+
+    /// Scaffold a new repository from a built-in template
+    New(NewArgs),
 }
 
 #[derive(Args, Debug)]
@@ -58,6 +63,45 @@ pub struct GetNextSubnetArgs {
     /// Max concurrent VNet reads
     #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u16).range(1..=64))]
     pub concurrency: u16,
+}
+
+#[derive(Args, Debug)]
+pub struct NewArgs {
+    /// Repository template
+    pub template: Template,
+
+    /// Directory to create (must be absent or empty unless --force)
+    pub path: PathBuf,
+
+    /// Project name used inside the files [default: the directory name]
+    #[arg(long, value_parser = parse_project_name)]
+    pub name: Option<String>,
+
+    /// One-line description for README and package.json
+    #[arg(short = 'd', long, value_parser = parse_description)]
+    pub description: Option<String>,
+
+    /// Terraform version pinned in .terraform-version (Terraform templates)
+    #[arg(long, default_value = "1.13.3", value_parser = parse_version)]
+    pub terraform_version: String,
+
+    /// Run `git init -b main` in the new directory
+    #[arg(long)]
+    pub git: bool,
+
+    /// Write into a non-empty directory, overwriting files the template provides
+    #[arg(long)]
+    pub force: bool,
+
+    /// Print the files that would be written without writing them
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Template {
+    /// Terraform deployment: root config + local modules, per-env tfvars/backends, Azure DevOps CI/CD, pre-commit, commitlint
+    TerraformDeployment,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
@@ -100,6 +144,39 @@ fn parse_resource_group(s: &str) -> Result<String, String> {
     })
 }
 
+/// Lowercase so the same name is valid for npm, ADO environments and Terraform state keys.
+pub fn parse_project_name(s: &str) -> Result<String, String> {
+    let ok = (1..=64).contains(&s.len())
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
+        && s.starts_with(|c: char| c.is_ascii_alphanumeric());
+    ok.then(|| s.to_string()).ok_or_else(|| {
+        format!("invalid project name '{s}' (1-64 chars: lowercase letters, digits, '-', '_')")
+    })
+}
+
+// Rendered verbatim into JSON, YAML and Markdown, so keep out anything that needs escaping.
+fn parse_description(s: &str) -> Result<String, String> {
+    let ok = !s.trim().is_empty()
+        && s.len() <= 200
+        && !s
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '"' | '\\' | '`'));
+    ok.then(|| s.trim().to_string()).ok_or_else(|| {
+        "description must be 1-200 chars without quotes, backslashes or backticks".into()
+    })
+}
+
+fn parse_version(s: &str) -> Result<String, String> {
+    let parts: Vec<_> = s.split('.').collect();
+    let ok = parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
+    ok.then(|| s.to_string())
+        .ok_or_else(|| format!("'{s}' is not an exact version like 1.13.3"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,5 +195,16 @@ mod tests {
         assert!(parse_vnet_name("x' | project *").is_err());
         assert!(parse_resource_group("rg-net(prod)").is_ok());
         assert!(parse_resource_group("rg' or 1==1").is_err());
+    }
+
+    #[test]
+    fn new_args_validation() {
+        assert!(parse_project_name("platform-infra_01").is_ok());
+        assert!(parse_project_name("Platform").is_err());
+        assert!(parse_project_name("-x").is_err());
+        assert!(parse_description("Hub networking").is_ok());
+        assert!(parse_description("say \"hi\"").is_err());
+        assert!(parse_version("1.13.3").is_ok());
+        assert!(parse_version("~> 1.13").is_err());
     }
 }

@@ -72,6 +72,28 @@ steps:
 - Client-certificate service principals aren't supported yet (needs OpenSSL in the SDK).
 - Git Bash users: pass `-p 27`, not `-p /27` (MSYS path rewriting).
 
+## `new`
+
+Scaffolds a repository from a template compiled into the binary (no network, no Plaster).
+
+```bash
+aznet new terraform-deployment ./platform-hub --git -d "Hub networking for the platform team"
+aznet new terraform-deployment . --name platform-hub --force   # into an existing, non-empty dir
+aznet new terraform-deployment ./x --dry-run                   # list files only
+```
+
+| Template | What you get |
+|----------|--------------|
+| `terraform-deployment` | `terraform/` root config (`versions/variables/locals/data/main/outputs.tf`) + `modules/` + `tfvars/<env>.tfvars`/`.tfbackend` for dev/test/prod; `.azdo/ci.yml` (fmt, validate, tflint, dev plan) and `.azdo/cd.yml` (plan → approve → apply per env); husky + commitlint, pre-commit (terraform fmt/validate/tflint/docs), commitizen (`.cz.toml`, `VERSION`, `CHANGELOG.md`), `.tflint.hcl`, `.terraform-docs.yml`, `.terraform-version`, `.vscode/` |
+
+`--name` (default: directory name, lowercase) and `--description` are substituted into the files;
+`--terraform-version` pins `.terraform-version`. A non-empty target needs `--force`.
+
+To add a template: put its files under `templates/<name>/` with a `.tmpl` suffix (`{{name}}`,
+`{{description}}`, `{{terraform_version}}` are substituted), add a `Template` variant in
+`src/aznet/cli.rs` and a `TemplateSpec` in `src/aznet/scaffold.rs`. A test fails if the file list
+and the directory disagree.
+
 ## Build
 
 ```bash

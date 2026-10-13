@@ -1,0 +1,8 @@
+# Remote state for prod. Used as: terraform init -backend-config=tfvars/prod.tfbackend
+# The storage account must exist (bootstrap it once, outside this repo) and the deploying
+# identity needs 'Storage Blob Data Contributor' on the container.
+subscription_id      = "00000000-0000-0000-0000-000000000000" # TODO: state subscription
+resource_group_name  = "rg-tfstate-prod"
+storage_account_name = "sttfstateprod001" # TODO: globally unique, 3-24 lowercase alphanumerics
+container_name       = "tfstate"
+key                  = "{{name}}/prod.tfstate"

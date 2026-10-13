@@ -1,0 +1,11 @@
+# Commitizen: `cz bump` derives the next version from Conventional Commits since the last
+# tag, updates VERSION, package.json and CHANGELOG.md, commits and tags vX.Y.Z.
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.1.0"
+version_scheme = "semver2"
+tag_format = "v$version"
+version_files = ["VERSION", "package.json:\"version\""]
+update_changelog_on_bump = true
+changelog_file = "CHANGELOG.md"
+major_version_zero = true

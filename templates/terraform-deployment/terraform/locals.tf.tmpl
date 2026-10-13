@@ -1,0 +1,14 @@
+locals {
+  # <workload>-<environment>, e.g. "rg-${local.name_suffix}"
+  name_suffix = "${var.workload}-${var.environment}"
+
+  tags = merge(
+    {
+      environment = var.environment
+      workload    = var.workload
+      repository  = "{{name}}"
+      managed_by  = "terraform"
+    },
+    var.tags,
+  )
+}

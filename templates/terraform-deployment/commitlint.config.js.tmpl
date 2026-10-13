@@ -1,0 +1,9 @@
+/** @type {import('@commitlint/types').UserConfig} */
+module.exports = {
+  extends: ['@commitlint/config-conventional'],
+  rules: {
+    // Warn (not fail) on unknown scopes so new areas don't block commits.
+    'scope-enum': [1, 'always', ['terraform', 'modules', 'pipelines', 'deps', 'docs', 'release']],
+    'body-max-line-length': [1, 'always', 100],
+  },
+};

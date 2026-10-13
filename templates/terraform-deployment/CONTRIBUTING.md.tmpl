@@ -1,0 +1,35 @@
+# Contributing to {{name}}
+
+## Setup
+
+```bash
+npm install              # installs husky hooks (commit-msg, pre-commit)
+pip install pre-commit   # terraform fmt / validate / tflint / docs on commit
+```
+
+Also needed on PATH: `terraform` (version in `.terraform-version`; `tfenv` / `tenv` pick it
+up automatically), [`tflint`](https://github.com/terraform-linters/tflint) and
+[`terraform-docs`](https://terraform-docs.io).
+
+## Workflow
+
+1. Branch from `main`: `feat/<short-description>`, `fix/<short-description>`.
+2. Make the change; run `terraform plan` against **dev** locally (see README).
+3. Commit with [Conventional Commits](https://www.conventionalcommits.org):
+   `feat(modules): add key vault module`, `fix(terraform): correct dev address space`.
+   Breaking changes: `feat!: ...` or a `BREAKING CHANGE:` footer.
+4. Open a PR into `main`. The CI pipeline (`.azdo/ci.yml`) runs fmt, validate, tflint and a dev plan.
+5. After merge, the CD pipeline (`.azdo/cd.yml`) plans and applies dev → test → prod, pausing
+   for the approvals configured on each Azure DevOps Environment.
+
+## PR checklist
+
+- [ ] `npm run lint` passes
+- [ ] Plan output reviewed; no unexpected destroys/replacements
+- [ ] New variables and outputs have descriptions (`TERRAFORM-DOCS.md` regenerated)
+- [ ] No secrets in `*.tfvars` (use Key Vault references or pipeline secrets)
+
+## Releasing
+
+`npm run release` (`cz bump`) bumps `VERSION`, `package.json` and `CHANGELOG.md`, then tags
+`vX.Y.Z`. Push with `git push --follow-tags`.
