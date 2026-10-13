@@ -194,6 +194,12 @@ pub fn print_table(r: &Report) {
             row.requested_prefix,
             row.address_space.join(", ")
         );
+        if row.address_space.len() > 1 {
+            println!("  VNet has multiple IPv4 address spaces. Check each range for a free block:");
+            for space in &row.address_space {
+                println!("    - {space}");
+            }
+        }
         match &row.largest_free {
             Some(l) => {
                 let p = l.rsplit('/').next().unwrap_or_default();
