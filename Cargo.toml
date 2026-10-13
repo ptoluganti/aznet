@@ -33,3 +33,8 @@ base64 = "0.22"
 lto = true
 codegen-units = 1
 strip = true
+
+[package.metadata.deb]
+maintainer = "Pradeep Toluganti"
+section = "net"
+extended-description = "Azure network helper CLI: find the next free subnet in a VNet across subscriptions."

@@ -79,4 +79,7 @@ cargo build --release   # binary at target/release/aznet
 cargo test
 ```
 
-Tagging `v*` builds release binaries for Linux, macOS (x64 + arm64) and Windows via GitHub Actions.
+CI follows gitflow (`feature/*`/`bugfix/*` → `develop` → `release/*`/`hotfix/*` → `main`). Every push
+builds packages for Linux (x64 + arm64, `.tar.gz` + `.deb`), macOS (x64 + arm64, `.tar.gz`) and
+Windows (x64, `.zip`) as workflow artifacts. Merging a version bump into `main` (or pushing a `v*`
+tag that matches `Cargo.toml`) publishes a GitHub Release with those packages and `SHA256SUMS`.
