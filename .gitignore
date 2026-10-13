@@ -1,0 +1,18 @@
+# Rust build artifacts
+/target/
+/debug/
+/release/
+**/*.rs.bk
+
+# Native / release binaries
+*.exe
+*.dll
+*.so
+*.dylib
+*.pdb
+
+# Editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
