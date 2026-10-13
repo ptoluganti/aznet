@@ -165,11 +165,28 @@ pub fn evaluate(r: &VnetRef, sub_name: String, vnet: &Vnet, prefix: u8) -> VnetR
             largest_free,
             free_blocks,
             usable_free_addresses,
+            per_space,
         } => {
             row.status = Status::Exhausted;
             row.largest_free = largest_free.map(|c| c.to_string());
             row.free_blocks = free_blocks.iter().map(ToString::to_string).collect();
             row.usable_free_addresses = usable_free_addresses;
+            if per_space.len() > 1 {
+                row.error = Some(format!(
+                    "Multiple IPv4 address spaces; suggest checking each range: {}",
+                    per_space
+                        .iter()
+                        .map(|s| format!(
+                            "{} (largest free: {})",
+                            s.space,
+                            s.largest_free
+                                .map(|c| c.to_string())
+                                .unwrap_or_else(|| "none".into())
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ));
+            }
         }
     }
     row

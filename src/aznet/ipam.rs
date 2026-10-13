@@ -135,6 +135,14 @@ pub fn range_to_cidrs(a: u64, b: u64) -> Vec<Ipv4Cidr> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpaceExhaustion {
+    pub space: Ipv4Cidr,
+    pub largest_free: Option<Ipv4Cidr>,
+    pub free_blocks: Vec<Ipv4Cidr>,
+    pub usable_free_addresses: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Allocation {
     Available(Ipv4Cidr),
     Exhausted {
@@ -144,12 +152,15 @@ pub enum Allocation {
         free_blocks: Vec<Ipv4Cidr>,
         /// Addresses in those usable blocks (fragments smaller than /29 are excluded).
         usable_free_addresses: u64,
+        /// Per-address-space advice when the VNet contains more than one IPv4 range.
+        per_space: Vec<SpaceExhaustion>,
     },
 }
 
 /// First-fit across address spaces in declared order.
 pub fn next_available(spaces: &[Ipv4Cidr], used: &[Ipv4Cidr], prefix: u8) -> Allocation {
     let mut blocks = Vec::new();
+    let mut per_space = Vec::new();
     for &space in spaces {
         let free = free_ranges(space, used);
         if space.prefix() <= prefix {
@@ -157,11 +168,23 @@ pub fn next_available(spaces: &[Ipv4Cidr], used: &[Ipv4Cidr], prefix: u8) -> All
                 return Allocation::Available(c);
             }
         }
-        blocks.extend(
-            free.into_iter()
-                .flat_map(|(a, b)| range_to_cidrs(a, b))
-                .filter(|c| c.prefix() <= AZURE_MIN_SUBNET_PREFIX),
-        );
+        let usable: Vec<Ipv4Cidr> = free
+            .into_iter()
+            .flat_map(|(a, b)| range_to_cidrs(a, b))
+            .filter(|c| c.prefix() <= AZURE_MIN_SUBNET_PREFIX)
+            .collect();
+        let largest_free = usable
+            .iter()
+            .min_by_key(|c| (c.prefix(), c.first()))
+            .copied();
+        let usable_free_addresses = usable.iter().map(Ipv4Cidr::size).sum();
+        per_space.push(SpaceExhaustion {
+            space,
+            largest_free,
+            free_blocks: usable.clone(),
+            usable_free_addresses,
+        });
+        blocks.extend(usable);
     }
     blocks.sort_unstable_by_key(|c| c.first());
     let largest_free = blocks
@@ -173,6 +196,7 @@ pub fn next_available(spaces: &[Ipv4Cidr], used: &[Ipv4Cidr], prefix: u8) -> All
         largest_free,
         free_blocks: blocks,
         usable_free_addresses,
+        per_space,
     }
 }
 
@@ -247,6 +271,7 @@ mod tests {
                 largest_free,
                 free_blocks,
                 usable_free_addresses,
+                ..
             } => {
                 assert_eq!(largest_free, Some(c("10.0.0.224/28")));
                 assert_eq!(free_blocks, cs(&["10.0.0.224/28", "10.0.0.248/29"]));
