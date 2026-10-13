@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+# Run the hooks in .pre-commit-config.yaml (hygiene + terraform fmt/validate/tflint/docs)
+# on staged files. CI runs the same terraform checks, so a missing install only warns.
+if command -v pre-commit >/dev/null 2>&1; then
+  pre-commit run
+else
+  echo "husky: 'pre-commit' not found (pip install pre-commit); skipping local checks" >&2
+fi

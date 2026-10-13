@@ -1,0 +1,10 @@
+# Local modules
+
+Modules used only by this deployment. Each directory is a self-contained module
+(`main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`) called from `../main.tf` with
+`source = "./modules/<name>"`.
+
+Promote a module to its own repository (and pin it by tag) once a second deployment needs it.
+
+Modules declare `required_providers` but never a `provider` block; providers are configured
+once, in the root `versions.tf`.

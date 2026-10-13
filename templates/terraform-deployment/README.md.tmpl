@@ -1,0 +1,55 @@
+# {{name}}
+
+{{description}}
+
+## Layout
+
+```text
+.azdo/                  Azure DevOps pipelines
+  ci.yml                PR validation: fmt, validate, tflint, dev plan
+  cd.yml                main: plan -> approve -> apply, dev -> test -> prod
+.husky/                 git hooks (commitlint, pre-commit)
+terraform/
+  modules/              local modules, called from main.tf
+  tfvars/               <env>.tfvars (inputs) + <env>.tfbackend (state location)
+  data.tf  locals.tf  main.tf  outputs.tf  variables.tf  versions.tf
+  TERRAFORM-DOCS.md     generated input/output reference
+.terraform-version      pinned Terraform version (tfenv / tenv / CI)
+.tflint.hcl  .terraform-docs.yml  .pre-commit-config.yaml
+.cz.toml  commitlint.config.js  CHANGELOG.md  VERSION
+```
+
+## Environments
+
+| Environment | Variables | State | ADO service connection | ADO environment |
+|---|---|---|---|---|
+| dev  | `tfvars/dev.tfvars`  | `tfvars/dev.tfbackend`  | `sc-{{name}}-dev`  | `{{name}}-dev`  |
+| test | `tfvars/test.tfvars` | `tfvars/test.tfbackend` | `sc-{{name}}-test` | `{{name}}-test` |
+| prod | `tfvars/prod.tfvars` | `tfvars/prod.tfbackend` | `sc-{{name}}-prod` | `{{name}}-prod` |
+
+## Running locally
+
+```bash
+az login
+export ARM_SUBSCRIPTION_ID=<target subscription id>
+cd terraform
+terraform init -backend-config=tfvars/dev.tfbackend
+terraform plan -var-file=tfvars/dev.tfvars
+```
+
+Switching environment: `terraform init -reconfigure -backend-config=tfvars/<env>.tfbackend`.
+
+## Pipeline setup (once)
+
+1. **State storage** per environment: a storage account + `tfstate` container matching
+   `tfvars/<env>.tfbackend`, with shared-key access disabled.
+2. **Service connections** (`sc-{{name}}-<env>`): Azure Resource Manager, workload identity
+   federation. Grant the identity its deployment role on the target scope and
+   *Storage Blob Data Contributor* on the state container.
+3. **Environments** (`{{name}}-<env>`): add approvals/checks (at least on test and prod).
+4. Create two pipelines from `.azdo/ci.yml` and `.azdo/cd.yml`; add `ci` as a build validation
+   policy on `main`.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Input/output reference: [terraform/TERRAFORM-DOCS.md](terraform/TERRAFORM-DOCS.md).

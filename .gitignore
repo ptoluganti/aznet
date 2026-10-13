@@ -12,7 +12,7 @@
 *.pdb
 
 # Editor / OS files
-.vscode/
-.idea/
+/.vscode/
+/.idea/
 .DS_Store
 Thumbs.db

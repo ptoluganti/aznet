@@ -1,0 +1,27 @@
+variable "environment" {
+  description = "Deployment environment."
+  type        = string
+
+  validation {
+    condition     = contains(["dev", "test", "prod"], var.environment)
+    error_message = "environment must be one of: dev, test, prod."
+  }
+}
+
+variable "location" {
+  description = "Azure region for all resources."
+  type        = string
+  default     = "uksouth"
+}
+
+variable "workload" {
+  description = "Short workload name used in resource names."
+  type        = string
+  default     = "{{name}}"
+}
+
+variable "tags" {
+  description = "Extra tags merged over the standard set in locals.tf."
+  type        = map(string)
+  default     = {}
+}

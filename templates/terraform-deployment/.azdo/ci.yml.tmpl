@@ -1,0 +1,86 @@
+# CI: every PR into main. Static checks need no credentials; the plan stage uses the dev
+# service connection so reviewers see the real diff against dev state.
+trigger: none
+
+pr:
+  branches:
+    include: [main]
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  TF_IN_AUTOMATION: 'true'
+  TF_INPUT: 'false'
+  TFLINT_VERSION: v0.58.1
+  workingDirectory: $(System.DefaultWorkingDirectory)/terraform
+  devServiceConnection: sc-{{name}}-dev
+
+stages:
+  - stage: validate
+    displayName: Validate
+    jobs:
+      - job: static
+        displayName: fmt / validate / tflint
+        steps:
+          - checkout: self
+
+          - bash: |
+              set -euo pipefail
+              version="$(cat .terraform-version)"
+              curl -fsSL -o /tmp/terraform.zip "https://releases.hashicorp.com/terraform/${version}/terraform_${version}_linux_amd64.zip"
+              sudo unzip -o -q /tmp/terraform.zip -d /usr/local/bin
+              terraform version
+            displayName: Install Terraform
+
+          - bash: curl -fsSL https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+            displayName: Install TFLint
+            env:
+              TFLINT_VERSION: $(TFLINT_VERSION)
+
+          - bash: terraform fmt -check -recursive -diff
+            displayName: terraform fmt
+            workingDirectory: $(workingDirectory)
+
+          - bash: |
+              set -euo pipefail
+              terraform init -backend=false
+              terraform validate
+            displayName: terraform validate
+            workingDirectory: $(workingDirectory)
+
+          - bash: |
+              set -euo pipefail
+              tflint --init --config "$(System.DefaultWorkingDirectory)/.tflint.hcl"
+              tflint --recursive --config "$(System.DefaultWorkingDirectory)/.tflint.hcl"
+            displayName: tflint
+            workingDirectory: $(workingDirectory)
+
+  - stage: plan_dev
+    displayName: Plan (dev)
+    dependsOn: validate
+    jobs:
+      - job: plan
+        displayName: terraform plan dev
+        steps:
+          - checkout: self
+
+          - bash: |
+              set -euo pipefail
+              version="$(cat .terraform-version)"
+              curl -fsSL -o /tmp/terraform.zip "https://releases.hashicorp.com/terraform/${version}/terraform_${version}_linux_amd64.zip"
+              sudo unzip -o -q /tmp/terraform.zip -d /usr/local/bin
+            displayName: Install Terraform
+
+          - task: AzureCLI@2
+            displayName: terraform plan
+            inputs:
+              azureSubscription: $(devServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              workingDirectory: $(workingDirectory)
+              inlineScript: |
+                set -euo pipefail
+                export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+                terraform init -backend-config=tfvars/dev.tfbackend
+                terraform plan -lock=false -var-file=tfvars/dev.tfvars

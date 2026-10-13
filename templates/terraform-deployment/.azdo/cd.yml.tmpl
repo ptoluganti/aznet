@@ -1,0 +1,98 @@
+# CD: on merge to main, plan -> apply per environment, promoted dev -> test -> prod.
+# Approvals and checks are configured on the Azure DevOps Environments
+# ({{name}}-dev, {{name}}-test, {{name}}-prod), not in this file.
+trigger:
+  branches:
+    include: [main]
+  paths:
+    include: [terraform, .terraform-version, .azdo/cd.yml]
+
+pr: none
+
+parameters:
+  - name: environments
+    type: object
+    default:
+      - name: dev
+        serviceConnection: sc-{{name}}-dev
+      - name: test
+        serviceConnection: sc-{{name}}-test
+      - name: prod
+        serviceConnection: sc-{{name}}-prod
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  TF_IN_AUTOMATION: 'true'
+  TF_INPUT: 'false'
+  workingDirectory: $(System.DefaultWorkingDirectory)/terraform
+
+stages:
+  - ${{ each env in parameters.environments }}:
+      - stage: plan_${{ env.name }}
+        displayName: Plan (${{ env.name }})
+        jobs:
+          - job: plan
+            displayName: terraform plan ${{ env.name }}
+            steps:
+              - checkout: self
+
+              - bash: |
+                  set -euo pipefail
+                  version="$(cat .terraform-version)"
+                  curl -fsSL -o /tmp/terraform.zip "https://releases.hashicorp.com/terraform/${version}/terraform_${version}_linux_amd64.zip"
+                  sudo unzip -o -q /tmp/terraform.zip -d /usr/local/bin
+                displayName: Install Terraform
+
+              - task: AzureCLI@2
+                displayName: terraform plan
+                inputs:
+                  azureSubscription: ${{ env.serviceConnection }}
+                  scriptType: bash
+                  scriptLocation: inlineScript
+                  workingDirectory: $(workingDirectory)
+                  inlineScript: |
+                    set -euo pipefail
+                    export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+                    terraform init -backend-config=tfvars/${{ env.name }}.tfbackend
+                    terraform plan -var-file=tfvars/${{ env.name }}.tfvars -out=tfplan
+
+              - publish: $(workingDirectory)/tfplan
+                artifact: tfplan-${{ env.name }}
+                displayName: Publish plan
+
+      - stage: apply_${{ env.name }}
+        displayName: Apply (${{ env.name }})
+        jobs:
+          - deployment: apply
+            displayName: terraform apply ${{ env.name }}
+            environment: {{name}}-${{ env.name }}
+            strategy:
+              runOnce:
+                deploy:
+                  steps:
+                    - checkout: self
+
+                    - download: current
+                      artifact: tfplan-${{ env.name }}
+
+                    - bash: |
+                        set -euo pipefail
+                        version="$(cat .terraform-version)"
+                        curl -fsSL -o /tmp/terraform.zip "https://releases.hashicorp.com/terraform/${version}/terraform_${version}_linux_amd64.zip"
+                        sudo unzip -o -q /tmp/terraform.zip -d /usr/local/bin
+                      displayName: Install Terraform
+
+                    - task: AzureCLI@2
+                      displayName: terraform apply
+                      inputs:
+                        azureSubscription: ${{ env.serviceConnection }}
+                        scriptType: bash
+                        scriptLocation: inlineScript
+                        workingDirectory: $(workingDirectory)
+                        inlineScript: |
+                          set -euo pipefail
+                          export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+                          terraform init -backend-config=tfvars/${{ env.name }}.tfbackend
+                          terraform apply "$(Pipeline.Workspace)/tfplan-${{ env.name }}/tfplan"

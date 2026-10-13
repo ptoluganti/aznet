@@ -1,0 +1,15 @@
+# LF everywhere: pipelines and git hooks run on Linux agents / sh.
+* text=auto eol=lf
+
+.husky/* text eol=lf
+*.ps1    text eol=crlf
+*.cmd    text eol=crlf
+*.bat    text eol=crlf
+
+*.png binary
+*.jpg binary
+*.zip binary
+
+# Generated; collapse in PR diffs.
+.terraform.lock.hcl     linguist-generated=true -diff
+terraform/TERRAFORM-DOCS.md linguist-generated=true

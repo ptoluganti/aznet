@@ -1,0 +1,31 @@
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+# .terraform.lock.hcl is committed on purpose: it pins provider checksums.
+
+# Local-only variables. Environment tfvars in terraform/tfvars/ ARE committed: no secrets in them.
+*.auto.tfvars
+*.local.tfvars
+*.local.tfbackend
+
+# Node (husky / commitlint)
+node_modules/
+
+# Editors / OS
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.DS_Store
+Thumbs.db
