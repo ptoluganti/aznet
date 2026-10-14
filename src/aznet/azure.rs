@@ -17,6 +17,7 @@ const ARM: &str = "https://management.azure.com";
 const API_SUBSCRIPTIONS: &str = "2022-12-01";
 const API_RESOURCE_GRAPH: &str = "2021-03-01";
 const API_NETWORK: &str = "2024-05-01";
+const API_POLICY: &str = "2023-04-01";
 const MAX_RETRIES: u32 = 4;
 /// Resource Graph accepts at most 1000 subscriptions per request.
 const RG_SUBSCRIPTION_CHUNK: usize = 1000;
@@ -115,20 +116,60 @@ pub struct PolicyState {
     pub policy_definition_reference_id: String,
     #[serde(default)]
     pub policy_set_definition_name: String,
+    #[serde(default)]
+    pub policy_set_definition_id: String,
     /// When the state was last evaluated (ISO 8601).
     #[serde(default)]
     pub timestamp: String,
+    /// The resource's tags; only fetched when filtering by tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<serde_json::Value>,
 }
 
-/// Filters for [`ArmClient::policy_states`]. Name-or-ID values match the full ID when they
-/// contain `/`, otherwise the name; all comparisons are case-insensitive.
+/// `--tag key` (present, any value) or `--tag key=value`. Matched case-insensitively.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagFilter {
+    pub key: String,
+    pub value: Option<String>,
+}
+
+/// Filters for the policy-state queries. Empty slices / `None` mean "no filter". Policy
+/// selectors are resolved to full IDs first (see `policy_compliance::resolve`).
 #[derive(Debug, Default)]
 pub struct PolicyStateFilter<'a> {
-    pub policy_definition: Option<&'a str>,
-    pub policy_assignment: Option<&'a str>,
+    pub assignment_ids: &'a [String],
+    /// Matches a state's policy definition or its initiative (policy set definition).
+    pub definition_ids: &'a [String],
     pub resource_ids: &'a [String],
+    /// Matched against the last segment of the resource ID (case-insensitive).
+    pub resource_names: &'a [String],
     pub resource_group: Option<&'a str>,
+    pub tags: &'a [TagFilter],
     pub non_compliant_only: bool,
+}
+
+/// One assignment / definition / initiative combination that has states in scope.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyPair {
+    pub policy_assignment_id: String,
+    pub policy_definition_id: String,
+    #[serde(default)]
+    pub policy_set_definition_id: String,
+}
+
+/// Name and display name of a policy assignment, definition or initiative (ARM read).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PolicyObject {
+    pub name: String,
+    #[serde(default)]
+    pub properties: PolicyObjectProperties,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyObjectProperties {
+    pub display_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -143,6 +184,9 @@ struct GraphResponse<T> {
     data: Vec<T>,
     #[serde(rename = "$skipToken")]
     skip_token: Option<String>,
+    /// "true" when Resource Graph dropped rows it couldn't page (queries without `id`).
+    #[serde(rename = "resultTruncated", default)]
+    result_truncated: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -238,6 +282,9 @@ impl ArmClient {
                 }
                 let body = json!({ "subscriptions": chunk, "query": query, "options": options });
                 let resp: GraphResponse<T> = self.send(|| self.http.post(&url).json(&body)).await?;
+                if resp.result_truncated.as_deref() == Some("true") {
+                    bail!("Resource Graph truncated the results; narrow the scope (--subscription, --resource-group, --policy-assignment)");
+                }
                 out.extend(resp.data);
                 match resp.skip_token {
                     Some(t) => skip = Some(t),
@@ -277,6 +324,28 @@ impl ArmClient {
             .await
     }
 
+    /// Which assignment / definition / initiative combinations have states under `filter`
+    /// (its policy ID lists are ignored). Used to resolve names and display names.
+    pub async fn policy_pairs(
+        &self,
+        subscription_ids: &[String],
+        filter: &PolicyStateFilter<'_>,
+    ) -> Result<Vec<PolicyPair>> {
+        self.graph_query(subscription_ids, &policy_pairs_query(filter))
+            .await
+    }
+
+    /// Reads a policy assignment, definition or initiative by ID. Built-in definitions live
+    /// at tenant level and aren't in Resource Graph, so display names come from ARM.
+    pub async fn get_policy_object(&self, id: &str) -> Result<PolicyObject> {
+        // IDs come from Resource Graph; still refuse anything that could change the URL.
+        if !is_plain_arm_path(id) {
+            bail!("unexpected policy ID: {id}");
+        }
+        let url = format!("{ARM}{id}?api-version={API_POLICY}");
+        self.send(|| self.http.get(&url)).await
+    }
+
     /// Authoritative read: Resource Graph can lag ARM by seconds to minutes, which is
     /// unacceptable for allocation decisions.
     pub async fn get_vnet(&self, id: &str) -> Result<Vnet> {
@@ -288,6 +357,37 @@ impl ArmClient {
 /// Builds the `policyresources` query behind [`ArmClient::policy_states`]. Every user value
 /// goes through [`kql_string`].
 pub fn policy_states_query(f: &PolicyStateFilter<'_>) -> String {
+    let mut q = policy_states_filtered(f, true);
+    q.push_str(
+        " | project id, subscriptionId, resourceId, resourceGroup, complianceState, \
+                   policyAssignmentName, policyAssignmentId, \
+                   policyDefinitionName, policyDefinitionId, policySetDefinitionId, \
+                   resourceType = tostring(p.resourceType), \
+                   effect = tostring(p.policyDefinitionAction), \
+                   policyDefinitionReferenceId = tostring(p.policyDefinitionReferenceId), \
+                   policySetDefinitionName = tostring(p.policySetDefinitionName), \
+                   timestamp = todatetime(p.timestamp)",
+    );
+    if !f.tags.is_empty() {
+        q.push_str(", tags = resourceTags");
+    }
+    q.push_str(
+        " | order by resourceId asc, policyAssignmentName asc, policyDefinitionReferenceId asc",
+    );
+    q
+}
+
+/// Builds the query behind [`ArmClient::policy_pairs`]: distinct policy combinations under
+/// the non-policy filters.
+pub fn policy_pairs_query(f: &PolicyStateFilter<'_>) -> String {
+    let mut q = policy_states_filtered(f, false);
+    q.push_str(
+        " | summarize states = count() by policyAssignmentId, policyDefinitionId, policySetDefinitionId",
+    );
+    q
+}
+
+fn policy_states_filtered(f: &PolicyStateFilter<'_>, by_policy: bool) -> String {
     let mut q = String::from(
         "policyresources \
          | where type =~ 'microsoft.policyinsights/policystates' \
@@ -297,27 +397,41 @@ pub fn policy_states_query(f: &PolicyStateFilter<'_>) -> String {
                   policyAssignmentName = tostring(p.policyAssignmentName), \
                   policyAssignmentId = tostring(p.policyAssignmentId), \
                   policyDefinitionName = tostring(p.policyDefinitionName), \
-                  policyDefinitionId = tostring(p.policyDefinitionId)",
+                  policyDefinitionId = tostring(p.policyDefinitionId), \
+                  policySetDefinitionId = tostring(p.policySetDefinitionId)",
     );
-    let mut name_or_id = |value: Option<&str>, name_col: &str, id_col: &str| {
-        if let Some(v) = value {
-            let col = if v.contains('/') { id_col } else { name_col };
-            let _ = write!(q, " | where {col} =~ {}", kql_string(v));
-        }
+    let list = |ids: &[String]| {
+        ids.iter()
+            .map(|i| kql_string(i))
+            .collect::<Vec<_>>()
+            .join(", ")
     };
-    name_or_id(
-        f.policy_definition,
-        "policyDefinitionName",
-        "policyDefinitionId",
-    );
-    name_or_id(
-        f.policy_assignment,
-        "policyAssignmentName",
-        "policyAssignmentId",
-    );
+    if by_policy && !f.assignment_ids.is_empty() {
+        let _ = write!(
+            q,
+            " | where policyAssignmentId in~ ({})",
+            list(f.assignment_ids)
+        );
+    }
+    if by_policy && !f.definition_ids.is_empty() {
+        let ids = list(f.definition_ids);
+        let _ = write!(
+            q,
+            " | where policyDefinitionId in~ ({ids}) or policySetDefinitionId in~ ({ids})"
+        );
+    }
+    let mut resource_match = Vec::new();
     if !f.resource_ids.is_empty() {
-        let list: Vec<String> = f.resource_ids.iter().map(|r| kql_string(r)).collect();
-        let _ = write!(q, " | where resourceId in~ ({})", list.join(", "));
+        resource_match.push(format!("resourceId in~ ({})", list(f.resource_ids)));
+    }
+    if !f.resource_names.is_empty() {
+        resource_match.push(format!(
+            "extract('[^/]+$', 0, resourceId) in~ ({})",
+            list(f.resource_names)
+        ));
+    }
+    if !resource_match.is_empty() {
+        let _ = write!(q, " | where {}", resource_match.join(" or "));
     }
     q.push_str(" | extend resourceGroup = extract('(?i)/resourcegroups/([^/]+)', 1, resourceId)");
     if let Some(rg) = f.resource_group {
@@ -326,18 +440,38 @@ pub fn policy_states_query(f: &PolicyStateFilter<'_>) -> String {
     if f.non_compliant_only {
         q.push_str(" | where complianceState !~ 'Compliant'");
     }
-    q.push_str(
-        " | project id, subscriptionId, resourceId, resourceGroup, complianceState, \
-                   policyAssignmentName, policyAssignmentId, \
-                   policyDefinitionName, policyDefinitionId, \
-                   resourceType = tostring(p.resourceType), \
-                   effect = tostring(p.policyDefinitionAction), \
-                   policyDefinitionReferenceId = tostring(p.policyDefinitionReferenceId), \
-                   policySetDefinitionName = tostring(p.policySetDefinitionName), \
-                   timestamp = todatetime(p.timestamp) \
-         | order by resourceId asc, policyAssignmentName asc, policyDefinitionReferenceId asc",
-    );
+    if !f.tags.is_empty() {
+        // policyresources has its own (empty) `tags` column, hence `resourceTags`. Lower-casing
+        // the whole bag makes key and value matching case-insensitive, like Azure tag keys.
+        q.push_str(
+            " | extend joinId = tolower(resourceId) \
+             | join kind=inner (resources | union resourcecontainers \
+                                | project joinId = tolower(id), resourceTags = tags) on joinId \
+             | extend lowerTags = parse_json(tolower(tostring(resourceTags)))",
+        );
+        for t in f.tags {
+            let key = kql_string(&t.key.to_lowercase());
+            match &t.value {
+                Some(v) => {
+                    let _ = write!(
+                        q,
+                        " | where tostring(lowerTags[{key}]) == {}",
+                        kql_string(&v.to_lowercase())
+                    );
+                }
+                None => {
+                    let _ = write!(q, " | where isnotnull(lowerTags[{key}])");
+                }
+            }
+        }
+    }
     q
+}
+
+/// An ARM resource path that's safe to append to the ARM host: absolute, with no query,
+/// fragment, backslash or `..` that could change which URL is requested.
+pub fn is_plain_arm_path(id: &str) -> bool {
+    id.starts_with('/') && !id.contains(['?', '#', '\\']) && !id.contains("..")
 }
 
 /// Quotes `s` as a KQL string literal. Backslash and single quote are the only characters

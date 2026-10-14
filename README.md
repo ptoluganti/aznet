@@ -74,26 +74,57 @@ steps:
 
 ## `check-policy-compliance`
 
-Reports the latest Azure Policy compliance state of resources for a policy definition and/or
-assignment, across every subscription you can see, in a single Resource Graph query
-(`policyresources`).
+Lists the resources that are (non-)compliant with a policy definition, initiative and/or
+assignment, across every subscription you can see. Policies can be named by **display name**,
+name or full ID, and resources filtered by **tag**.
 
 ```bash
-# Every resource an assignment evaluated (initiatives: one row per member policy)
-aznet check-policy-compliance -a baseline-security
+# Non-compliant resources for an assignment, by its display name
+aznet check-policy-compliance -a "Baseline security" --non-compliant-only
 
-# Specific resources against one definition (name/GUID or full ID), within one assignment
+# A single policy (display name) wherever it's assigned; shows which assignments matched
+aznet check-policy-compliance -d "Storage accounts should restrict network access"
+
+# An initiative within one assignment, only for production resources
+aznet check-policy-compliance -d "Microsoft cloud security benchmark" -a baseline-security --tag env=prod
+
+# Named resources in one subscription, against a definition within an assignment
 aznet check-policy-compliance -d 06a78e20-9358-41c9-923c-fb736d382a4d -a baseline-security \
-  -r /subscriptions/<id>/resourceGroups/rg-app/providers/Microsoft.Storage/storageAccounts/st1
+  -r vm-app-01,stappdata01,kv-app -s "Contoso Production"
 
-# Only what needs fixing, as JSON
-aznet check-policy-compliance -a baseline-security -g rg-app --non-compliant-only -o json
+# Resources by full ID, as JSON
+aznet check-policy-compliance -a baseline-security -o json \
+  -r /subscriptions/<id>/resourceGroups/rg-app/providers/Microsoft.Storage/storageAccounts/st1
 ```
 
-At least one of `-d/--policy-definition` and `-a/--policy-assignment` is required. Each takes a
-name or a full resource ID (matched case-insensitively). `-d` is the definition's *name*, usually
-a GUID, not an initiative member's reference ID (that's shown in the Policy column). Filters:
-`-r/--resource` (repeatable full IDs), `-g/--resource-group`, `-s/--subscription`.
+At least one of these is required:
+
+- `-a/--policy-assignment`: the assignment's display name, name or full ID.
+- `-d/--policy-definition`: a policy or initiative's display name, name (usually a GUID) or full ID.
+  Naming an initiative selects all of its member policies.
+
+Matching ignores case. Name or ID is tried first. Display names are looked up through ARM only
+when nothing matches that way, and only among the policies that have compliance states in scope.
+
+Filters:
+
+| Flag | Selects |
+|------|---------|
+| `-r/--resource` | Specific resources, by name or full ID (comma-separated and/or repeated). A name matches that resource in any resource group, so add `-g` or `-s` if names repeat |
+| `-g/--resource-group` | Resources in one resource group |
+| `-t/--tag key` or `key=value` | Resources with that tag (repeatable, all must match; case-insensitive) |
+| `-s/--subscription` | Subscriptions to search, by display name or ID (repeatable; not comma-split, since names can contain commas) |
+| `--non-compliant-only` | Only states that aren't compliant |
+
+How it works:
+
+- **Queries:** one Resource Graph query finds which policies have states in scope, and a second
+  one fetches the states (`policyresources`). Tag filters join to `resources` and
+  `resourcecontainers`, so subscription tags work too.
+- **Table:** one row per resource, listing the display names of the policies it fails, followed
+  by the full IDs of non-compliant resources so you can copy them.
+- **JSON (`-o json`):** every state, plus `assignments`, `non_compliant_resource_ids`, and the
+  resource's `tags` when you filter by tag.
 
 Compliant, Exempt and Protected count as passing; NonCompliant, Conflicting, Unknown and Error
 don't. A resource is non-compliant if any policy that evaluated it fails.
@@ -103,12 +134,14 @@ don't. A resource is non-compliant if any policy that evaluated it fails.
 | 0 | Every matched resource is compliant |
 | 1 | Error (auth, API, bad input) |
 | 2 | At least one resource is non-compliant |
-| 3 | No policy state matched, or a `--resource` has no state (out of scope, excluded, or not evaluated yet) |
+| 3 | Nothing matched (policy, filters or scope), or a `--resource` has no state (out of scope, excluded, or not evaluated yet) |
 
-States are as fresh as Azure Policy's last evaluation (after a resource changes, plus a full scan
-about every 24 h); the *Evaluated* column shows each one's age. This command reads state only; it
-doesn't trigger a scan. Git Bash users: set `MSYS_NO_PATHCONV=1` so `/subscriptions/...` IDs
-aren't rewritten into Windows paths.
+Results are only as fresh as Azure Policy's last evaluation, which runs after a resource changes
+and as a full scan about every 24 hours. The *Evaluated* column shows when each resource was last
+evaluated. This command only reads state; it doesn't trigger a scan.
+
+Git Bash users: set `MSYS_NO_PATHCONV=1`. Otherwise Git Bash rewrites `/subscriptions/...` IDs
+into Windows paths.
 
 ## `new`
 
