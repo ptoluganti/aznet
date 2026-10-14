@@ -74,3 +74,57 @@ fn resource_id_explains_git_bash_path_rewrite() {
     let err = parse_resource_id("C:/Program Files/Git/subscriptions/s").unwrap_err();
     assert!(err.contains("MSYS_NO_PATHCONV"));
 }
+
+#[test]
+fn tag_filters() {
+    assert_eq!(
+        parse_tag("env=prod"),
+        Ok(TagFilter {
+            key: "env".into(),
+            value: Some("prod".into())
+        })
+    );
+    assert_eq!(
+        parse_tag("costcentre"),
+        Ok(TagFilter {
+            key: "costcentre".into(),
+            value: None
+        })
+    );
+    // Only the first '=' splits, so values may contain '='.
+    assert_eq!(parse_tag("q=a=b").unwrap().value.as_deref(), Some("a=b"));
+    assert!(parse_tag("=prod").is_err());
+}
+
+#[test]
+fn resources_accept_names_ids_and_comma_lists() {
+    let cli = Cli::try_parse_from([
+        "aznet",
+        "check-policy-compliance",
+        "-d",
+        "def",
+        "-a",
+        "baseline",
+        "-s",
+        "Prod, Inc.",
+        "-r",
+        "vm1,st1",
+        "-r",
+        "/subscriptions/s/resourceGroups/rg/providers/A/b/kv1",
+    ])
+    .unwrap();
+    let Command::CheckPolicyCompliance(a) = cli.command else {
+        panic!("wrong command")
+    };
+    assert_eq!(
+        a.resources,
+        [
+            "vm1",
+            "st1",
+            "/subscriptions/s/resourceGroups/rg/providers/A/b/kv1"
+        ]
+    );
+    // Subscription display names may contain commas, so -s is not split.
+    assert_eq!(a.subscriptions, ["Prod, Inc."]);
+    assert!(parse_resource("C:/Program Files/Git/subscriptions/s").is_err());
+}

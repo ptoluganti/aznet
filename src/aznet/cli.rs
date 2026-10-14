@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 use crate::aznet::auth::{AuthConfig, AuthMethod};
+use crate::aznet::azure::TagFilter;
 use crate::aznet::ipam::AZURE_MIN_SUBNET_PREFIX;
 
 #[derive(Parser, Debug)]
@@ -93,21 +94,26 @@ pub struct GetNextSubnetArgs {
         .multiple(true)
 ))]
 pub struct CheckPolicyComplianceArgs {
-    /// Policy definition: name (usually a GUID) or full resource ID
+    /// Policy or initiative definition: display name, name (usually a GUID) or full resource ID
     #[arg(short = 'd', long, value_parser = parse_kql_value)]
     pub policy_definition: Option<String>,
 
-    /// Policy assignment: name or full resource ID. Initiative assignments report each member policy
+    /// Policy assignment: display name, name or full resource ID. Initiatives report each member policy
     #[arg(short = 'a', long, value_parser = parse_kql_value)]
     pub policy_assignment: Option<String>,
 
-    /// Resource ID to check (repeatable). Omit to report every resource the policy evaluated
-    #[arg(short = 'r', long = "resource", value_parser = parse_resource_id)]
+    /// Resources to check, by name or full ID: comma-separated and/or repeated. Omit to report
+    /// every resource the policy evaluated
+    #[arg(short = 'r', long = "resource", value_delimiter = ',', value_parser = parse_resource)]
     pub resources: Vec<String>,
 
     /// Only resources in this resource group (case-insensitive)
     #[arg(short = 'g', long, value_parser = parse_resource_group)]
     pub resource_group: Option<String>,
+
+    /// Only resources with this tag: "key" (any value) or "key=value"; repeatable, all must match
+    #[arg(short = 't', long = "tag", value_parser = parse_tag)]
+    pub tags: Vec<TagFilter>,
 
     /// Limit search to these subscriptions (ID or display name, repeatable)
     #[arg(short = 's', long = "subscription")]
@@ -212,6 +218,33 @@ fn parse_kql_value(s: &str) -> Result<String, String> {
     let ok = (1..=1024).contains(&s.len()) && !s.chars().any(char::is_control);
     ok.then(|| s.to_string())
         .ok_or_else(|| "must be 1-1024 characters without control characters".into())
+}
+
+fn parse_tag(s: &str) -> Result<TagFilter, String> {
+    let s = parse_kql_value(s)?;
+    let (key, value) = match s.split_once('=') {
+        Some((k, v)) => (k.trim(), Some(v.trim().to_string())),
+        None => (s.as_str(), None),
+    };
+    // Azure tag limits: key 512 chars, value 256.
+    if key.is_empty() || key.len() > 512 || value.as_ref().is_some_and(|v| v.len() > 256) {
+        return Err("expected key or key=value (key 1-512 chars, value up to 256)".into());
+    }
+    Ok(TagFilter {
+        key: key.to_string(),
+        value,
+    })
+}
+
+/// A resource name, or a full resource ID (anything starting with `/`, or a Git Bash rewrite of one).
+fn parse_resource(s: &str) -> Result<String, String> {
+    let s = s.trim();
+    if s.starts_with('/') || s.contains(":/") {
+        return parse_resource_id(s);
+    }
+    let ok = (1..=260).contains(&s.len()) && !s.chars().any(char::is_control);
+    ok.then(|| s.to_string())
+        .ok_or_else(|| "expected a resource name (1-260 characters) or a full resource ID".into())
 }
 
 fn parse_resource_id(s: &str) -> Result<String, String> {
