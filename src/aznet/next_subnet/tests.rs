@@ -58,19 +58,3 @@ fn evaluates_each_address_space() {
         .collect();
     assert_eq!(next, [Some("10.0.0.32/27"), Some("10.1.0.32/27")]);
 }
-
-#[test]
-fn filter_reports_unknown_subscription() {
-    let subs = vec![Subscription {
-        subscription_id: "11111111-1111-1111-1111-111111111111".into(),
-        display_name: "Prod".into(),
-        state: "Enabled".into(),
-    }];
-    assert_eq!(
-        filter_subscriptions(subs.clone(), &["prod".into()])
-            .unwrap()
-            .len(),
-        1
-    );
-    assert!(filter_subscriptions(subs, &["dev".into()]).is_err());
-}

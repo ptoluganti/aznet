@@ -7,8 +7,8 @@ use std::sync::Arc;
 use anyhow::{bail, Result};
 use futures::stream::{self, StreamExt};
 
-use crate::aznet::auth::{AuthConfig, TokenProvider};
-use crate::aznet::azure::{ArmClient, Subscription, Vnet, VnetRef};
+use crate::aznet::auth::TokenProvider;
+use crate::aznet::azure::{filter_subscriptions, ArmClient, Vnet, VnetRef};
 use crate::aznet::cli::{GetNextSubnetArgs, Output};
 use crate::aznet::ipam::{self, Allocation, Ipv4Cidr};
 use crate::aznet::report::{self, Report, SpaceResult, Status, VnetResult};
@@ -27,12 +27,7 @@ pub async fn run(args: GetNextSubnetArgs) -> Result<ExitCode> {
     };
 
     // 1. Auth: resolve a credential and acquire an ARM token before any API work.
-    let auth = TokenProvider::connect(&AuthConfig {
-        method: Some(args.auth),
-        tenant: args.tenant.clone(),
-        managed_identity_client_id: args.managed_identity_client_id.clone(),
-    })
-    .await?;
+    let auth = TokenProvider::connect(&(&args.auth).into()).await?;
     let auth = Arc::new(auth);
     let who = auth.identity.display_name();
     let tenant_id = auth.identity.tenant_id.clone();
@@ -111,19 +106,6 @@ pub async fn run(args: GetNextSubnetArgs) -> Result<ExitCode> {
     } else {
         exit::ALL_AVAILABLE
     }))
-}
-
-fn filter_subscriptions(subs: Vec<Subscription>, wanted: &[String]) -> Result<Vec<Subscription>> {
-    let matches = |s: &Subscription, w: &str| {
-        s.subscription_id.eq_ignore_ascii_case(w) || s.display_name.eq_ignore_ascii_case(w)
-    };
-    if let Some(missing) = wanted.iter().find(|w| !subs.iter().any(|s| matches(s, w))) {
-        bail!("subscription '{missing}' not found or not accessible in this tenant");
-    }
-    Ok(subs
-        .into_iter()
-        .filter(|s| wanted.iter().any(|w| matches(s, w)))
-        .collect())
 }
 
 /// Pure: VNet JSON -> result row. IPv6 prefixes are ignored.

@@ -119,7 +119,7 @@ impl Report {
     }
 }
 
-fn table() -> Table {
+pub fn table() -> Table {
     let mut t = Table::new();
     t.load_preset(UTF8_FULL)
         .apply_modifier(UTF8_ROUND_CORNERS)

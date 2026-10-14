@@ -72,6 +72,44 @@ steps:
 - Client-certificate service principals aren't supported yet (needs OpenSSL in the SDK).
 - Git Bash users: pass `-p 27`, not `-p /27` (MSYS path rewriting).
 
+## `check-policy-compliance`
+
+Reports the latest Azure Policy compliance state of resources for a policy definition and/or
+assignment, across every subscription you can see, in a single Resource Graph query
+(`policyresources`).
+
+```bash
+# Every resource an assignment evaluated (initiatives: one row per member policy)
+aznet check-policy-compliance -a baseline-security
+
+# Specific resources against one definition (name/GUID or full ID), within one assignment
+aznet check-policy-compliance -d 06a78e20-9358-41c9-923c-fb736d382a4d -a baseline-security \
+  -r /subscriptions/<id>/resourceGroups/rg-app/providers/Microsoft.Storage/storageAccounts/st1
+
+# Only what needs fixing, as JSON
+aznet check-policy-compliance -a baseline-security -g rg-app --non-compliant-only -o json
+```
+
+At least one of `-d/--policy-definition` and `-a/--policy-assignment` is required. Each takes a
+name or a full resource ID (matched case-insensitively). `-d` is the definition's *name*, usually
+a GUID, not an initiative member's reference ID (that's shown in the Policy column). Filters:
+`-r/--resource` (repeatable full IDs), `-g/--resource-group`, `-s/--subscription`.
+
+Compliant, Exempt and Protected count as passing; NonCompliant, Conflicting, Unknown and Error
+don't. A resource is non-compliant if any policy that evaluated it fails.
+
+| Code | Meaning |
+|-----:|---------|
+| 0 | Every matched resource is compliant |
+| 1 | Error (auth, API, bad input) |
+| 2 | At least one resource is non-compliant |
+| 3 | No policy state matched, or a `--resource` has no state (out of scope, excluded, or not evaluated yet) |
+
+States are as fresh as Azure Policy's last evaluation (after a resource changes, plus a full scan
+about every 24 h); the *Evaluated* column shows each one's age. This command reads state only; it
+doesn't trigger a scan. Git Bash users: set `MSYS_NO_PATHCONV=1` so `/subscriptions/...` IDs
+aren't rewritten into Windows paths.
+
 ## `new`
 
 Scaffolds a repository from a template compiled into the binary (no network, no Plaster).

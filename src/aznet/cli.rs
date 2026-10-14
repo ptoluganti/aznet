@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
-use crate::aznet::auth::AuthMethod;
+use crate::aznet::auth::{AuthConfig, AuthMethod};
 use crate::aznet::ipam::AZURE_MIN_SUBNET_PREFIX;
 
 #[derive(Parser, Debug)]
@@ -22,8 +22,37 @@ pub enum Command {
     /// Find the next free subnet of a given size in a VNet, across every subscription you can see
     GetNextSubnet(GetNextSubnetArgs),
 
+    /// Report the compliance state of resources against a policy definition and/or assignment
+    CheckPolicyCompliance(CheckPolicyComplianceArgs),
+
     /// Scaffold a new repository from a built-in template
     New(NewArgs),
+}
+
+/// Credential selection, shared by every command that talks to Azure.
+#[derive(Args, Debug)]
+pub struct AuthArgs {
+    /// How to authenticate
+    #[arg(long = "auth", value_enum, default_value_t = AuthMethod::Auto, env = "AZNET_AUTH")]
+    pub method: AuthMethod,
+
+    /// Tenant to authenticate against (defaults to the credential's home tenant)
+    #[arg(long, env = "AZNET_TENANT")]
+    pub tenant: Option<String>,
+
+    /// Client ID of a user-assigned managed identity (with --auth managed-identity)
+    #[arg(long, env = "AZNET_MI_CLIENT_ID")]
+    pub managed_identity_client_id: Option<String>,
+}
+
+impl From<&AuthArgs> for AuthConfig {
+    fn from(a: &AuthArgs) -> Self {
+        Self {
+            method: Some(a.method),
+            tenant: a.tenant.clone(),
+            managed_identity_client_id: a.managed_identity_client_id.clone(),
+        }
+    }
 }
 
 #[derive(Args, Debug)]
@@ -44,17 +73,8 @@ pub struct GetNextSubnetArgs {
     #[arg(short = 's', long = "subscription")]
     pub subscriptions: Vec<String>,
 
-    /// How to authenticate
-    #[arg(long, value_enum, default_value_t = AuthMethod::Auto, env = "AZNET_AUTH")]
-    pub auth: AuthMethod,
-
-    /// Tenant to authenticate against (defaults to the credential's home tenant)
-    #[arg(long, env = "AZNET_TENANT")]
-    pub tenant: Option<String>,
-
-    /// Client ID of a user-assigned managed identity (with --auth managed-identity)
-    #[arg(long, env = "AZNET_MI_CLIENT_ID")]
-    pub managed_identity_client_id: Option<String>,
+    #[command(flatten)]
+    pub auth: AuthArgs,
 
     /// Output format
     #[arg(short = 'o', long, value_enum, default_value_t = Output::Table)]
@@ -63,6 +83,46 @@ pub struct GetNextSubnetArgs {
     /// Max concurrent VNet reads
     #[arg(long, default_value_t = 8, value_parser = clap::value_parser!(u16).range(1..=64))]
     pub concurrency: u16,
+}
+
+#[derive(Args, Debug)]
+#[command(group(
+    ArgGroup::new("policy")
+        .args(["policy_definition", "policy_assignment"])
+        .required(true)
+        .multiple(true)
+))]
+pub struct CheckPolicyComplianceArgs {
+    /// Policy definition: name (usually a GUID) or full resource ID
+    #[arg(short = 'd', long, value_parser = parse_kql_value)]
+    pub policy_definition: Option<String>,
+
+    /// Policy assignment: name or full resource ID. Initiative assignments report each member policy
+    #[arg(short = 'a', long, value_parser = parse_kql_value)]
+    pub policy_assignment: Option<String>,
+
+    /// Resource ID to check (repeatable). Omit to report every resource the policy evaluated
+    #[arg(short = 'r', long = "resource", value_parser = parse_resource_id)]
+    pub resources: Vec<String>,
+
+    /// Only resources in this resource group (case-insensitive)
+    #[arg(short = 'g', long, value_parser = parse_resource_group)]
+    pub resource_group: Option<String>,
+
+    /// Limit search to these subscriptions (ID or display name, repeatable)
+    #[arg(short = 's', long = "subscription")]
+    pub subscriptions: Vec<String>,
+
+    /// Fetch only states that aren't compliant (smaller output for broad assignments)
+    #[arg(long)]
+    pub non_compliant_only: bool,
+
+    #[command(flatten)]
+    pub auth: AuthArgs,
+
+    /// Output format
+    #[arg(short = 'o', long, value_enum, default_value_t = Output::Table)]
+    pub output: Output,
 }
 
 #[derive(Args, Debug)]
@@ -141,6 +201,32 @@ fn parse_resource_group(s: &str) -> Result<String, String> {
         && !s.ends_with('.');
     ok.then(|| s.to_string()).ok_or_else(|| {
         "invalid resource group name (1-90 chars: letters, digits, - _ . ( ))".into()
+    })
+}
+
+// Policy and resource IDs can hold characters a strict charset would wrongly reject, so these
+// are escaped into KQL string literals (`azure::kql_string`) instead; reject only what can't be
+// escaped safely or can't be real.
+fn parse_kql_value(s: &str) -> Result<String, String> {
+    let s = s.trim();
+    let ok = (1..=1024).contains(&s.len()) && !s.chars().any(char::is_control);
+    ok.then(|| s.to_string())
+        .ok_or_else(|| "must be 1-1024 characters without control characters".into())
+}
+
+fn parse_resource_id(s: &str) -> Result<String, String> {
+    let s = parse_kql_value(s)?.trim_end_matches('/').to_string();
+    // Git Bash (MSYS) rewrites a leading "/subscriptions/..." into "C:/Program Files/Git/subscriptions/...".
+    if s.contains(":/") && s.to_ascii_lowercase().contains("/subscriptions/") {
+        return Err(
+            "looks like Git Bash rewrote the leading '/' into a Windows path; \
+             run with MSYS_NO_PATHCONV=1, or use PowerShell/cmd"
+                .into(),
+        );
+    }
+    let ok = s.to_ascii_lowercase().starts_with("/subscriptions/") && s.split('/').count() >= 3;
+    ok.then_some(s).ok_or_else(|| {
+        "expected a full resource ID: /subscriptions/<id>/resourceGroups/<rg>/providers/...".into()
     })
 }
 

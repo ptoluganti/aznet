@@ -1,9 +1,9 @@
 [package]
 name = "aznet"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.85"
-description = "Azure helper CLI: find the next free subnet in a VNet across subscriptions; scaffold repos from templates"
+description = "Azure helper CLI: find the next free subnet in a VNet, check Azure Policy compliance, scaffold repos from templates"
 license = "MIT"
 readme = "README.md"
 
